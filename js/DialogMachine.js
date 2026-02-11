@@ -20,7 +20,141 @@ export default class DialogMachine extends TalkMachine {
 
     // Registre des états des boutons - simple array: 0 = released, 1 = pressed
     this.buttonStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    //Mes imputs 
+    this.isOn = false;
+    this.powerButton = 0;   // ON/OFF
+    this.controlButton = 1; // next/repeat
+    this.yesButton = 2;
+    this.noButton = 3;
+    this.answerSound = new Audio('./sounds/answer.mp3');
   }
+  createNewButton() {
+  const getDiv = document.querySelector('.connect-container'); // prend la 1re div connect-container
+  const secondContainer = containers[1]; // 2e élément
+
+//créer un nouveau bouton
+  const newButton = document.createElement('button');
+  newButton.className = 'button black';
+  newButton.id = 'newprogrambutton';
+  newButton.textContent = 'Run New Program';
+  // Dans initDialogMachine()
+  this.isOn = false;
+  this.controlButton = 0;
+
+
+  getDiv.appendChild(newButton);
+}
+
+
+
+
+
+
+// Pool de questions
+questionPool() {
+  return ['Question 1', 'Question 2', 'Question 3', 'Question 4','Question 5'];
+}
+
+initQuestions() {
+  this.questions = this.questionPool();
+  this.currentQuestionIndex = 0;
+  //initialisation des stats du groupe
+  this.groupStats = this.questions.map(() => ({
+    yes:0,
+    no:0,
+  }));
+  //this.currentQuestionAnswers = [];
+  //this.answers = [];
+}
+
+togglePower() {
+  this.isOn = !this.isOn;
+
+  if (this.isOn) {
+    this.fancyLogger.logMessage('ON');
+    this.ledsAllChangeColor('green', 1);
+    this.dialogStarted = true;
+    this.initQuestions();
+    this.nextState = 'welcome';
+    this.goToNextState();
+  } else {
+    this.fancyLogger.logMessage('OFF');
+    this.ledsAllOff();
+    this.speechCancel();
+    this.dialogStarted = false;
+    this.nextState = '';
+  }
+}
+
+askCurrentQuestion() {
+  const q = this.questions[this.currentQuestionIndex];
+  if (!q) return;
+  this.speechText(q, this.preset_voice_normal);
+  this.fancyLogger.logMessage(q);
+}
+
+recordAnswer(button) {
+  if (button === this.yesButton) {
+    this.groupStats[this.currentQuestionIndex].yes += 1;
+    this.answerSound.currentTime = 0;
+    this.answerSound.play().catch(() => {});
+  }
+  if (button === this.noButton) {
+    this.groupStats[this.currentQuestionIndex].no += 1;
+    this.answerSound.currentTime = 0;
+    this.answerSound.play().catch(() => {});
+  } 
+}
+
+goToNextQuestion() {
+  const q = this.questions[this.currentQuestionIndex];
+  this.answers.push({
+    question: q,
+    responses: [...this.currentQuestionAnswers],
+  });
+
+  this.currentQuestionAnswers = [];
+  this.currentQuestionIndex += 1;
+
+  if (this.currentQuestionIndex < this.questions.length) {
+    this.nextState = 'ask-question';
+  } else {
+    this.nextState = 'show-result';
+  }
+}
+
+_handleButtonReleased(button, simulated = false) {
+  this.buttonStates[button] = 0;
+  if (!this.waitingForUserInput) return;
+
+  if (button === this.powerButton) {
+    this.togglePower();
+    return;
+  }
+
+  if (!this.isOn) return;
+
+  this.dialogFlow('released', button);
+}
+
+_handleButtonLongPressed(button, simulated = false) {
+  if (!this.waitingForUserInput) return;
+  if (!this.isOn) return;
+
+  if (button === this.controlButton) {
+    this.dialogFlow('longpress', button);
+  }
+}
+
+
+
+    //permet de montrer les résultats
+    showResult(){
+
+    }
+
+
 
   /* CONTRÔLE DU DIALOGUE */
   startDialog() {
@@ -29,7 +163,7 @@ export default class DialogMachine extends TalkMachine {
     // éteindre toutes les LEDs
     this.ledsAllOff();
     // effacer la console
-    this.fancyLogger.clearConsole();
+   // this.fancyLogger.clearConsole();
     // ----- initialiser les variables spécifiques au dialogue -----
     this.nextState = 'initialisation';
     this.buttonPressCounter = 0;
@@ -52,6 +186,8 @@ export default class DialogMachine extends TalkMachine {
       return;
     }
     this.stateUpdate();
+    //fonction pour les question 
+
 
     /**
      * ═══════════════════════════════════════════════════════════════════════════
@@ -76,43 +212,44 @@ export default class DialogMachine extends TalkMachine {
     switch (this.nextState) {
       case 'initialisation':
         // CONCEPT DE DIALOGUE: État de configuration - prépare le système avant l'interaction
-        this.ledsAllOff();
+        //this.ledsAllOff();
         this.nextState = 'welcome';
         this.fancyLogger.logMessage('initialisation done');
         this.goToNextState();
         break;
 
       case 'welcome':
-        // CONCEPT DE DIALOGUE: Salutation - établit le contexte et définit les attentes
-        this.ledsAllChangeColor('white', 1);
-        this.fancyLogger.logMessage(
-          'Welcome, you have got 2 buttons, press one of them',
-        );
-        this.nextState = 'choose-color';
+        this.speechText('Bienvenue. Bouton 1 court: suivant. Bouton 1 long: repeter.');
+        this.nextState = 'ask-question';
+        this.fancyLogger.logMessage("Introduction")
+        this.goToNextState();
+        break;
+    
+      case 'ask-question':
+        this.askCurrentQuestion();
+        this.nextState = 'wait-answer';
         break;
 
-      case 'choose-color':
-        // CONCEPT DE DIALOGUE: Branchement - le choix de l'utilisateur affecte le chemin de conversation
-        // Bouton 0 = Choix bleu, Bouton 1 = Choix jaune
-        if (button == 0) {
-          this.nextState = 'choose-blue';
+      case 'wait-answer':
+        if (eventType === 'released' && (button === this.yesButton || button === this.noButton)) {
+          this.recordAnswer(button);
+          break;
+        }
+
+        if (eventType === 'longpress' && button === this.controlButton) {
+          this.askCurrentQuestion(); // repeat
+          break;
+        }
+
+        if (eventType === 'released' && button === this.controlButton) {
+          this.goToNextQuestion();   // next
           this.goToNextState();
         }
-        if (button == 1) {
-          this.nextState = 'choose-yellow';
-          this.goToNextState();
-        }
         break;
 
-      case 'choose-blue':
-        // CONCEPT DE DIALOGUE: Retour positif - renforce le choix de l'utilisateur
-        this.fancyLogger.logMessage(
-          'blue was a good choice, press any button to continue',
-        );
-        this.ledsAllChangeColor('green', 0);
-        this.nextState = 'can-speak';
-        break;
 
+
+      /*
       case 'choose-yellow':
         // CONCEPT DE DIALOGUE: Boucle - la conversation retourne à l'état précédent
         // Cela crée un motif de "réessayer" dans le dialogue
@@ -164,10 +301,12 @@ export default class DialogMachine extends TalkMachine {
         this.fancyLogger.logWarning(
           `Sorry but State: "${this.nextState}" has no case defined`,
         );
+        */
     }
+    
   }
 
-  /**
+  /*
    * ═══════════════════════════════════════════════════════════════════════════
    * Autres fonctions
    * ═══════════════════════════════════════════════════════════════════════════
@@ -337,6 +476,21 @@ export default class DialogMachine extends TalkMachine {
   }
 }
 
+
+
 window.addEventListener('DOMContentLoaded', () => {
   const dialogMachine = new DialogMachine();
 });
+
+//CODE PROJET
+/*
+// array 5 question 
+poser 1 une question - appeler question 1 
+récupérer 
+
+*/ 
+
+
+
+
+
