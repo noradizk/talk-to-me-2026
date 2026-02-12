@@ -27,23 +27,39 @@ export default class DialogMachine extends TalkMachine {
     this.controlButton = 1; // next/repeat
     this.yesButton = 2;
     this.noButton = 3;
-    this.preset_voice_normal = ['en-GB', 1, 0.8];
+    this.preset_voice_normal = [0, 1, 0.8];
     this.answerSound = new Audio('./sounds/answer.mp3');
     this.lastPowerToggleMs = 0;
+
+    this.questionPolls = {
+      A: [
+        "Quand tu n’as pas préparé une réunion, est-ce que tu fais comme si tu étais au courant ?",
+        "Quand une tâche pénible doit être faite, est-ce que tu attends que quelqu’un d’autre la prenne ?",
+        "Si on te félicite pour un travail que tu n’as pas beaucoup fait, est-ce que tu laisses faire sans corriger ?",
+        "Si un problème arrive et que la cause n’est pas claire, est-ce que tu évites de dire que ta partie a peut-être contribué ?",
+        "Si on t’offre une opportunité ou une promotion parce qu’on pense que tu es le principal responsable d’un succès d’équipe, est-ce que tu acceptes sans préciser le rôle des autres ?",
+      ],
+      B: [
+        "Quand un ami va mal et te demande d’être disponible ce soir, est-ce que tu annules une soirée importante pour lui ?",
+        "Quand tu n’es pas d’accord avec une décision que tu trouves injuste, est-ce que tu fais semblant d’être d’accord pour éviter un conflit ?",
+        "Quand un ami te demande ton avis sur un choix important, est-ce que tu dis ce que tu penses vraiment, même si ça peut le vexer ?",
+        "Un ami s’est senti humilié par une remarque peut-être sans intention. Il te demande de ne plus inviter cette personne aux moments de groupe. Tu acceptes ?",
+        "Si un ami te confie quelque chose de très grave et tu penses que quelqu’un peut être en danger, est-ce que tu en parles à une personne de confiance ou à un professionnel, même s’il te demande de garder le secret ?",
+      ],
+      C: [
+        "Au restaurant, ton plat a un vrai problème. Est-ce que tu le dis clairement au serveur ?",
+        "Quelqu’un a une mauvaise haleine ou une odeur forte qui gêne. Est-ce que tu lui dis directement, en privé ?",
+        "Un proche te propose un plan qui ne te plaît pas. Est-ce que tu dis non tout de suite, sans inventer d’excuse ?",
+        "Quelqu’un te coupe la file ou te passe devant “sans faire exprès”. Est-ce que tu le lui fais remarquer sur le moment ?",
+        "Quelqu’un te demande ton avis sur un changement visible chez lui, et tu trouves ça raté. Est-ce que tu dis clairement que tu n’aimes pas ?",
+      ],
+    };
+    this.activePool = 'A';
+    this.poolClickCount = 0;
+    this.poolSelectionTimeout = null;
   }
-
-
-
-
-
-
-// Pool de questions
-questionPool() {
-  return ['Question 1', 'Question 2', 'Question 3', 'Question 4','Question 5'];
-}
-
 initQuestions() {
-  this.questions = this.questionPool();
+  this.questions = this.questionPolls[this.activePool] || this.questionPolls.A;
   this.currentQuestionIndex = 0;
   //initialisation des stats du groupe
   this.groupStats = this.questions.map(() => ({
@@ -59,13 +75,22 @@ togglePower() {
   if (this.isOn) {
     this.fancyLogger.logMessage('ON -> start welcome');
     this.dialogStarted = true;
-    this.initQuestions();
+    this.poolClickCount = 0;
+    if (this.poolSelectionTimeout) {
+      clearTimeout(this.poolSelectionTimeout);
+      this.poolSelectionTimeout = null;
+    }
     this.nextState = 'welcome';
     this.goToNextState();
   } else {
     this.fancyLogger.logMessage('OFF -> stop flow');
     this.ledsAllOff();
     this.speechCancel();
+    if (this.poolSelectionTimeout) {
+      clearTimeout(this.poolSelectionTimeout);
+      this.poolSelectionTimeout = null;
+    }
+    this.poolClickCount = 0;
     this.shouldContinue = false;
     this.nextState = 'standby';
   }
@@ -140,17 +165,73 @@ _handleButtonLongPressed(button, simulated = false) {
 
 
     //permet de montrer les résultats
-    showResult(){
+    showResult() {
+      const endings = {
+        A: {
+          yes: 'Pool A ending: the group mostly agreed.',
+          no: 'Pool A ending: the group mostly disagreed.',
+        },
+        B: {
+          yes: 'Pool B ending: strong collective affirmation.',
+          no: 'Pool B ending: strong collective rejection.',
+        },
+        C: {
+          yes: 'Pool C ending: unified positive response.',
+          no: 'Pool C ending: unified negative response.',
+        },
+      };
+
       let totalYes = 0;
       let totalNo = 0;
-      this.groupStats.forEach((s, i) => {
-        totalYes += s.yes;
-        totalNo += s.no;
-        this.fancyLogger.logMessage(`Q${i + 1} -> yes:${s.yes} no:${s.no}`);
+
+      let mostConsensualIndex = -1;
+      let highestAgreement = -1;
+
+      let mostRejectedIndex = -1;
+      let highestNoVotes = -1;
+
+      this.groupStats.forEach((stats, index) => {
+        const yes = stats.yes || 0;
+        const no = stats.no || 0;
+        const total = yes + no;
+
+        totalYes += yes;
+        totalNo += no;
+
+        if (total > 0) {
+          const agreement = Math.max(yes, no) / total;
+          if (agreement > highestAgreement) {
+            highestAgreement = agreement;
+            mostConsensualIndex = index;
+          }
+        }
+
+        if (no > highestNoVotes) {
+          highestNoVotes = no;
+          mostRejectedIndex = index;
+        }
       });
-      const result = `Resultat final: YES ${totalYes}, NO ${totalNo}`;
-      this.fancyLogger.logMessage(result);
-      this.speechText(result, this.preset_voice_normal);
+
+      const majority = totalYes > totalNo ? 'yes' : 'no';
+      const poolKey = endings[this.activePool] ? this.activePool : 'A';
+      const selectedEnding = endings[poolKey][majority];
+
+      const consensualQuestionNumber =
+        mostConsensualIndex >= 0 ? mostConsensualIndex + 1 : 1;
+      const rejectedQuestionNumber = mostRejectedIndex >= 0 ? mostRejectedIndex + 1 : 1;
+
+      this.fancyLogger.logMessage(`Total YES: ${totalYes}`);
+      this.fancyLogger.logMessage(`Total NO: ${totalNo}`);
+      this.fancyLogger.logMessage(`Selected ending: ${selectedEnding}`);
+      this.fancyLogger.logMessage(
+        `Most consensual question index: ${mostConsensualIndex >= 0 ? mostConsensualIndex + 1 : 'none'}`,
+      );
+      this.fancyLogger.logMessage(
+        `Most rejected question index: ${mostRejectedIndex >= 0 ? mostRejectedIndex + 1 : 'none'}`,
+      );
+
+      const finalMessage = `${selectedEnding} The most consensual question was question ${consensualQuestionNumber}. The most rejected question was question ${rejectedQuestionNumber}.`;
+      this.speechText(finalMessage, this.preset_voice_normal);
     }
 
 
@@ -209,7 +290,8 @@ _handleButtonLongPressed(button, simulated = false) {
       case 'welcome':
         this.fancyLogger.logMessage('STATE: welcome');
         this.speechText(
-          'Bienvenue. Appuie sur bouton 1 pour lancer la premiere question.',
+          'Bienvenue. Appuie sur bouton 1 une, deux ou trois fois pour choisir le pool de questions, puis attends une seconde.',
+          this.preset_voice_normal,
         );
         this.nextState = 'wait-start';
         this.shouldContinue = true;
@@ -221,9 +303,26 @@ _handleButtonLongPressed(button, simulated = false) {
           `STATE: wait-start event=${eventType} button=${button}`,
         );
         if (eventType === 'released' && button === this.controlButton) {
-          this.fancyLogger.logMessage('btn1 -> start first question');
-          this.nextState = 'ask-question';
-          this.goToNextState();
+          this.poolClickCount += 1;
+          this.fancyLogger.logMessage(`btn1 click count: ${this.poolClickCount}`);
+          if (this.poolSelectionTimeout) {
+            clearTimeout(this.poolSelectionTimeout);
+          }
+          this.poolSelectionTimeout = setTimeout(() => {
+            if (this.poolClickCount === 1) {
+              this.activePool = 'A';
+            } else if (this.poolClickCount === 2) {
+              this.activePool = 'B';
+            } else {
+              this.activePool = 'C';
+            }
+            this.fancyLogger.logMessage(`Selected pool: ${this.activePool}`);
+            this.initQuestions();
+            this.poolClickCount = 0;
+            this.poolSelectionTimeout = null;
+            this.nextState = 'ask-question';
+            this.goToNextState();
+          }, 1000);
         }
         break;
 
